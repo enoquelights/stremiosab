@@ -147,8 +147,49 @@ async def prowlarr_search(query: str, media_type: str):
         if not item.get("downloadUrl"):
             continue
         results.append(item)
-    # Prowlarr's result ordering is retained; do not invent a quality score.
+    # Rank by browser-friendliness. sorted() is stable, so Prowlarr's own order
+    # is kept as the tie-breaker between equally scored releases.
+    results = sorted(results, key=lambda r: -web_score(r.get("title") or ""))
+    for r in results[:5]:
+        log.info("candidate score=%s title=%s", web_score(r.get("title") or ""), r.get("title"))
     return results
+
+
+def _has(title: str, *patterns: str) -> bool:
+    return any(re.search(p, title, re.IGNORECASE) for p in patterns)
+
+
+def web_score(title: str) -> int:
+    """Higher = more likely to play directly in a browser / Stremio web player."""
+    score = 0
+    # Video codec: browsers handle H.264 everywhere; HEVC/10-bit/AV1 mostly not.
+    if _has(title, r"\bx\.?264\b", r"\bh\.?264\b", r"\bavc\b"):
+        score += 50
+    if _has(title, r"\bx\.?265\b", r"\bh\.?265\b", r"\bhevc\b"):
+        score -= 100
+    if _has(title, r"\b10.?bit\b", r"\bhi10p?\b"):
+        score -= 100
+    if _has(title, r"\bav1\b"):
+        score -= 60
+    if _has(title, r"\bremux\b", r"\bdv\b", r"dolby.?vision", r"\bhdr(10)?\+?\b"):
+        score -= 80
+    # Audio: AAC plays everywhere; AC3 in some browsers; DDP/DTS/TrueHD rarely.
+    if _has(title, r"\baac\b"):
+        score += 20
+    if _has(title, r"\bddp", r"\beac3\b", r"\bdd\+", r"\bdts", r"truehd", r"atmos"):
+        score -= 30
+    # Resolution: 1080p is the sweet spot; 2160p is almost always HEVC.
+    if _has(title, r"\b1080p\b"):
+        score += 10
+    elif _has(title, r"\b720p\b"):
+        score += 5
+    if _has(title, r"\b2160p\b", r"\b4k\b", r"\buhd\b"):
+        score -= 60
+    # Dubbed / foreign-language releases.
+    if _has(title, r"dub\b", r"\b(hebrew|french|german|italian|spanish|castellano|"
+                   r"latino|russian|hindi|tamil|turkish|polish|nordic|vostfr|truefrench|multi)\b"):
+        score -= 70
+    return score
 
 async def sab_add_nzb(download_url: str, job_name: str):
     headers = {"X-Api-Key": PROWLARR_KEY}
