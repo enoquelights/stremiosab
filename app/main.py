@@ -349,6 +349,7 @@ async def stream(media_type: str, video_id: str):
     job_name = f"stremio-{token[:12]}"
     # Reserve the video ID before submitting, preventing duplicate sessions.
     token = insert_session(video_id, media_type, title, job_name)
+    log.info("CREATED SESSION token=%s video_id=%s db=%s", token, video_id, DB_PATH)
     try:
         nzo_id = await sab_add_nzb(selected["downloadUrl"], job_name)
         update_session(token, nzo_id=nzo_id, status="queued",
@@ -370,7 +371,8 @@ async def stream(media_type: str, video_id: str):
 
 @app.api_route("/play/{token}", methods=["GET", "HEAD"])
 async def play(token: str, request: Request):
-    session = get_session(token)
+   session = get_session(token)
+    log.info("PLAY REQUEST token=%s found=%s db=%s", token, bool(session), DB_PATH)
     if not session:
         raise HTTPException(404, "Unknown or expired playback session")
     if session["status"] == "deleted":
