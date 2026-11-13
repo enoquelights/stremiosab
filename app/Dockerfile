@@ -7,7 +7,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir fastapi uvicorn requests
 
-COPY . .
+COPY app/ /app/
 
 EXPOSE 8086
 
