@@ -1,0 +1,26 @@
+services:
+  stremio-sab:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: stremio-sab
+    restart: unless-stopped
+
+    ports:
+      - "8087:8086"
+
+    environment:
+      SAB_URL: http://pia_vpn:8085
+      SAB_API_KEY: ${SAB_API_KEY}
+      SAB_CATEGORY: stremio
+      SAB_COMPLETE_ROOT: /data/downloads/stremio
+      TZ: Europe/London
+
+    volumes:
+      - /media/media2/downloads:/data/downloads:ro
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8086/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
