@@ -371,7 +371,7 @@ async def stream(media_type: str, video_id: str):
 
 @app.api_route("/play/{token}", methods=["GET", "HEAD"])
 async def play(token: str, request: Request):
-   session = get_session(token)
+    session = get_session(token)
     log.info("PLAY REQUEST token=%s found=%s db=%s", token, bool(session), DB_PATH)
     if not session:
         raise HTTPException(404, "Unknown or expired playback session")
