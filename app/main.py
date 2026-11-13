@@ -31,6 +31,7 @@ DB_PATH = os.getenv("DATABASE_PATH", "/state/sessions.sqlite3")
 TTL_SECONDS = int(os.getenv("SESSION_TTL_HOURS", "12")) * 3600
 WATCHED_THRESHOLD = float(os.getenv("WATCHED_THRESHOLD", "0.90"))
 MAX_WAIT_SECONDS = int(os.getenv("MAX_WAIT_HOURS", "6")) * 3600
+PLAY_WAIT_SECONDS = int(os.getenv("PLAY_WAIT_SECONDS", "20"))
 
 VIDEO_EXTS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".webm"}
 app = FastAPI(title="Stremio SABnzbd disposable streaming add-on", version="0.1.0")
@@ -334,6 +335,19 @@ async def cleanup_loop():
 async def stream(media_type: str, video_id: str):
     if media_type not in ("movie", "series"):
         return {"streams": []}
+    # Stremio re-requests /stream every time the detail page opens. Re-use the
+    # existing session instead of raising 409 (which made the stream vanish).
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT * FROM sessions WHERE video_id=? AND status NOT IN ('deleted','failed') "
+            "ORDER BY created_at DESC LIMIT 1", (video_id,)
+        ).fetchone()
+    if existing:
+        existing = dict(existing)
+        state = "Ready to play" if existing["status"] in ("ready", "playing", "cleanup_pending") \
+            else "Downloading; play when ready"
+        return {"streams": [stream_entry(existing["token"], existing["title"], state)]}
+
     title, query = await get_cinemeta(media_type, video_id)
     results = await prowlarr_search(query, media_type)
     if not results:
@@ -360,13 +374,18 @@ async def stream(media_type: str, video_id: str):
         return {"streams": []}
 
     release = selected.get("title") or title
+    return {"streams": [stream_entry(token, release, "Download queued; play when ready")]}
+
+
+def stream_entry(token: str, label: str, state: str):
     return {
-        "streams": [{
-            "name": "SABnzbd · temporary",
-            "title": f"{release}\nDownload queued; play when ready",
-            "url": f"{BASE_URL}/play/{token}",
-            "behaviorHints": {"notWebReady": False}
-        }]
+        "name": "SABnzbd · temporary",
+        "title": f"{label}\n{state}",
+        "url": f"{BASE_URL}/play/{token}",
+        # Usenet releases are usually MKV / E-AC3 (DDP) / DTS / HEVC, which browsers
+        # and the web player cannot decode. notWebReady=True makes Stremio route the
+        # URL through its streaming server, which can remux/transcode.
+        "behaviorHints": {"notWebReady": True, "bingeGroup": "stremio-sab"}
     }
 
 @app.api_route("/play/{token}", methods=["GET", "HEAD"])
@@ -377,7 +396,15 @@ async def play(token: str, request: Request):
         raise HTTPException(404, "Unknown or expired playback session")
     if session["status"] == "deleted":
         raise HTTPException(410, "This temporary download has been cleaned up")
-    path = Path(session["file_path"]) if session.get("file_path") else await wait_for_video(token)
+    if session.get("file_path"):
+        path = Path(session["file_path"])
+    else:
+        # Players give up after ~30-60 s, so don't hold the request open for hours.
+        try:
+            path = await asyncio.wait_for(wait_for_video(token), timeout=PLAY_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            raise HTTPException(503, "Still downloading in SABnzbd - try again shortly",
+                                headers={"Retry-After": "30"})
     if not path.exists() or path.suffix.lower() not in VIDEO_EXTS:
         raise HTTPException(404, "Playable video file not found")
     size = path.stat().st_size
